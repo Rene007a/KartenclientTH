@@ -33,6 +33,10 @@
           <label><input type="checkbox" id="antraege-visible" disabled /> Anträge</label>
         </div>
         <div id="antraege-status" class="hint">Lade Datenstand …</div>
+        <div id="antraege-update" class="update-box" hidden>
+          <span id="antraege-update-text"></span>
+          <button id="antraege-update-btn" class="primary">Jetzt aktualisieren</button>
+        </div>
         <progress id="antraege-progress" max="100" hidden></progress>
         <button id="antraege-import" title="MariaDB-Dump (.sql) oder Antragsdatenbank (.db) einlesen">
           Daten importieren …

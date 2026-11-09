@@ -6,6 +6,7 @@ import VectorLayer from "ol/layer/Vector";
 import VectorSource from "ol/source/Vector";
 import { Fill, Stroke, Style, Text } from "ol/style";
 import type { FeatureLike } from "ol/Feature";
+import type Geometry from "ol/geom/Geometry";
 import type OlMap from "ol/Map";
 
 // Eigene Antragsdaten aus der lokalen SQLite-Datei (Rust: src-tauri/src/antraege/)
@@ -21,6 +22,8 @@ export interface AntraegeStatus {
   anzahl: number;
   ohne_geometrie: number;
   quelle: string;
+  /** Vollständiger Pfad der zuletzt importierten Datei */
+  quelle_pfad: string | null;
   /** Unix-Zeit in Sekunden */
   importiert_am: number;
 }
@@ -152,19 +155,68 @@ export async function getStatus(): Promise<AntraegeStatus | null> {
   return invoke<AntraegeStatus | null>("antraege_status");
 }
 
-/** Öffnet den Dateidialog und importiert. `null` = abgebrochen. */
-export async function importAntraege(
-  onProgress: (p: ImportProgress) => void,
-): Promise<AntraegeStatus | null> {
+/** Ruft einen Import-Befehl auf und leitet die Fortschrittsmeldungen weiter */
+async function withProgress<T>(command: string, onProgress: (p: ImportProgress) => void) {
   if (!isTauri()) throw new Error("Der Import funktioniert nur in der Desktop-App.");
   const unlisten = await listen<ImportProgress>("antraege-import-progress", (e) =>
     onProgress(e.payload),
   );
   try {
-    return await invoke<AntraegeStatus | null>("import_antraege");
+    return await invoke<T>(command);
   } finally {
     unlisten();
   }
+}
+
+/** Öffnet den Dateidialog und importiert. `null` = abgebrochen. */
+export function importAntraege(onProgress: (p: ImportProgress) => void) {
+  return withProgress<AntraegeStatus | null>("import_antraege", onProgress);
+}
+
+/** Importiert erneut aus der zuletzt verwendeten Quelldatei */
+export function updateAntraege(onProgress: (p: ImportProgress) => void) {
+  return withProgress<AntraegeStatus>("antraege_update", onProgress);
+}
+
+export interface UpdateInfo {
+  pfad: string;
+  /** Änderungszeit der Quelldatei (Unix-Sekunden) */
+  geaendert: number;
+}
+
+/** Ist die zuletzt importierte Quelldatei inzwischen neuer? `null` = nein */
+export async function checkForUpdate(): Promise<UpdateInfo | null> {
+  if (!isTauri()) return null;
+  return invoke<UpdateInfo | null>("antraege_update_check");
+}
+
+/**
+ * Räumliche Suche: alle Anträge, die eine der Geometrien schneiden.
+ * Die exakte Prüfung macht Rust (geo-Bibliothek); Ergebnis wie bei der WFS-Suche.
+ */
+export async function searchAntraege(
+  geometries: Geometry[],
+  limit: number,
+): Promise<{ features: Feature[]; truncated: boolean }> {
+  if (!isTauri()) throw new Error("Die Antragssuche funktioniert nur in der Desktop-App.");
+  // Suchgeometrien als WKB-Hex an Rust (ohne SRID – alles ist EPSG:25832)
+  const writer = new WKB({ hex: true, littleEndian: true, ewkb: false });
+  const reader = new WKB();
+  const result = await invoke<{
+    features: { id: number; wkb: string; props: [string, string][] }[];
+    truncated: boolean;
+  }>("antraege_search", {
+    geometries: geometries.map((g) => writer.writeGeometry(g) as string),
+    limit,
+  });
+
+  const features = result.features.map((hit) => {
+    const f = new Feature({ geometry: reader.readGeometry(base64ToBytes(hit.wkb)) ?? undefined });
+    hit.props.forEach(([key, value]) => f.set(key, value));
+    f.setId(hit.id);
+    return f;
+  });
+  return { features, truncated: result.truncated };
 }
 
 /** Alle Sachdaten eines Antrags als [Feld, Wert]-Paare */

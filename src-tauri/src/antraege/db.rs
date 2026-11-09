@@ -18,6 +18,8 @@ pub struct Status {
     pub anzahl: i64,
     pub ohne_geometrie: i64,
     pub quelle: String,
+    /// Vollständiger Pfad der zuletzt importierten Datei (z. B. auf einem Netzlaufwerk)
+    pub quelle_pfad: Option<String>,
     /// Unix-Zeit in Sekunden
     pub importiert_am: i64,
 }
@@ -75,6 +77,7 @@ pub fn status(conn: &Connection) -> DbResult<Status> {
         anzahl,
         ohne_geometrie: num("ohne_geometrie")?,
         quelle: get_meta(conn, "quelle")?.unwrap_or_default(),
+        quelle_pfad: get_meta(conn, "quelle_pfad")?,
         importiert_am: num("importiert_am")?,
     })
 }
@@ -107,6 +110,45 @@ pub fn in_extent(conn: &Connection, e: [f64; 4], limit: u32) -> DbResult<Vec<Ant
         })
     })?;
     rows.collect()
+}
+
+/// Kandidaten für eine räumliche Suche: alle Anträge, deren Bounding Box `bbox` berührt.
+/// Ruft `f(id, wkb)` für jeden Kandidaten auf; gibt `f` false zurück, wird abgebrochen.
+pub fn for_each_candidate(
+    conn: &Connection,
+    bbox: [f64; 4],
+    mut f: impl FnMut(i64, &[u8]) -> bool,
+) -> DbResult<()> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT a.id, a.geom
+         FROM antraege_rtree r JOIN antraege a ON a.id = r.id
+         WHERE r.maxx >= ?1 AND r.minx <= ?3 AND r.maxy >= ?2 AND r.miny <= ?4
+         ORDER BY a.id",
+    )?;
+    let mut rows = stmt.query(params![bbox[0], bbox[1], bbox[2], bbox[3]])?;
+    while let Some(row) = rows.next()? {
+        let id: i64 = row.get(0)?;
+        let geom = row.get_ref(1)?.as_blob()?;
+        if !f(id, geom) {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Woher zuletzt importiert wurde (für "Neuere Daten verfügbar")
+pub struct SourceInfo {
+    pub path: String,
+    /// Änderungszeit der Quelldatei beim Import (Unix-Sekunden)
+    pub modified: i64,
+}
+
+pub fn source_info(conn: &Connection) -> DbResult<Option<SourceInfo>> {
+    let Some(path) = get_meta(conn, "quelle_pfad")? else {
+        return Ok(None);
+    };
+    let modified = get_meta(conn, "quelle_geaendert")?.and_then(|v| v.parse().ok()).unwrap_or(0);
+    Ok(Some(SourceInfo { path, modified }))
 }
 
 /// Alle Sachdaten eines Antrags als (Spalte, Wert)-Paare in Tabellenreihenfolge.

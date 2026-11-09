@@ -288,7 +288,8 @@ fn parse_string(b: &[u8]) -> Option<(Vec<u8>, usize)> {
     }
 }
 
-fn decode_hex(hex: &[u8]) -> Option<Vec<u8>> {
+/// "0A0B" -> [0x0A, 0x0B]. `pub(crate)`: im ganzen Programm nutzbar, aber nicht nach außen
+pub(crate) fn decode_hex(hex: &[u8]) -> Option<Vec<u8>> {
     if hex.len() % 2 != 0 {
         return None;
     }

@@ -12,11 +12,22 @@ import { BASE_LAYERS, WMS_LAYERS, WFS_LAYERS } from "./services";
 import { createBaseLayer, createWmsLayer, createWfsLayer } from "./layers";
 import { DrawManager, type DrawTool } from "./draw";
 import { ResultsPanel } from "./results";
-import { searchWfs } from "./search";
+import { MAX_SEARCH_RESULTS, searchWfs } from "./search";
 import { exportPdf, exportTable } from "./export";
 import { getVersion } from "@tauri-apps/api/app";
 import { isTauri } from "@tauri-apps/api/core";
-import { AntraegeLayer, formatStatus, getDetails, getStatus, importAntraege } from "./antraege";
+import {
+  AntraegeLayer,
+  checkForUpdate,
+  formatStatus,
+  getDetails,
+  getStatus,
+  importAntraege,
+  searchAntraege,
+  updateAntraege,
+  type AntraegeStatus,
+  type ImportProgress,
+} from "./antraege";
 import type Feature from "ol/Feature";
 
 // ---------- Layer anlegen ----------
@@ -237,14 +248,23 @@ function updateDrawUi() {
 draw.onChange(updateDrawUi);
 updateDrawUi();
 
+/** Wert der Auswahlliste "Suchen in" für die eigenen Antragsdaten */
+const ANTRAEGE_SEARCH_ID = "antraege";
+
 searchBtn.addEventListener("click", async () => {
-  const cfg = WFS_LAYERS.find((c) => c.id === searchSelect.value)!;
   searchBtn.disabled = true;
   searchBtn.textContent = "Suche läuft …";
   searchErrorEl.textContent = "";
   try {
-    const { features, truncated } = await searchWfs(cfg, draw.getSearchGeometries());
-    results.show(cfg.title, features, truncated);
+    const geometries = draw.getSearchGeometries();
+    if (searchSelect.value === ANTRAEGE_SEARCH_ID) {
+      const { features, truncated } = await searchAntraege(geometries, MAX_SEARCH_RESULTS);
+      results.show("Anträge", features, truncated);
+    } else {
+      const cfg = WFS_LAYERS.find((c) => c.id === searchSelect.value)!;
+      const { features, truncated } = await searchWfs(cfg, geometries);
+      results.show(cfg.title, features, truncated);
+    }
   } catch (err) {
     console.error(err);
     searchErrorEl.textContent = err instanceof Error ? err.message : String(err);
@@ -285,43 +305,81 @@ const antraegeHintEl = document.getElementById("antraege-hint")!;
 const antraegeCheck = document.getElementById("antraege-visible") as HTMLInputElement;
 const importBtn = document.getElementById("antraege-import") as HTMLButtonElement;
 const importProgress = document.getElementById("antraege-progress") as HTMLProgressElement;
+const updateBox = document.getElementById("antraege-update")!;
+const updateText = document.getElementById("antraege-update-text")!;
+const updateBtn = document.getElementById("antraege-update-btn") as HTMLButtonElement;
 
 const antraege = new AntraegeLayer(map, (text) => (antraegeHintEl.textContent = text));
 antraegeCheck.addEventListener("change", () => antraege.layer.setVisible(antraegeCheck.checked));
 
-function showAntraegeStatus(status: Awaited<ReturnType<typeof getStatus>>) {
-  antraegeStatusEl.textContent = status
-    ? formatStatus(status)
-    : "Noch keine Daten importiert.";
+function showAntraegeStatus(status: AntraegeStatus | null) {
+  antraegeStatusEl.textContent = status ? formatStatus(status) : "Noch keine Daten importiert.";
+  antraegeStatusEl.title = status?.quelle_pfad ? `Quelle: ${status.quelle_pfad}` : "";
   antraegeCheck.disabled = !status;
   if (!status) {
     antraegeCheck.checked = false;
     antraege.layer.setVisible(false);
   }
+
+  // "Anträge" in "Suchen in" nur anbieten, wenn Daten da sind
+  const option = [...searchSelect.options].find((o) => o.value === ANTRAEGE_SEARCH_ID);
+  if (status && !option) {
+    searchSelect.add(new Option("Anträge (eigene Daten)", ANTRAEGE_SEARCH_ID));
+  } else if (!status && option) {
+    option.remove();
+  }
+}
+
+/** Prüft, ob die Quelldatei (z. B. auf dem Netzlaufwerk) neuer ist, und zeigt ggf. den Hinweis */
+async function refreshUpdateHint() {
+  try {
+    const info = await checkForUpdate();
+    updateBox.hidden = !info;
+    if (info) {
+      const date = new Date(info.geaendert * 1000).toLocaleString("de-DE", {
+        dateStyle: "medium",
+        timeStyle: "short",
+      });
+      updateText.textContent = `Neuere Daten verfügbar (Stand ${date}).`;
+      updateBox.title = info.pfad;
+    }
+  } catch (err) {
+    console.error("Update-Prüfung fehlgeschlagen:", err);
+  }
 }
 
 getStatus()
-  .then(showAntraegeStatus)
+  .then((status) => {
+    showAntraegeStatus(status);
+    if (status) refreshUpdateHint();
+  })
   .catch((err) => {
     antraegeStatusEl.textContent = `Datenbank nicht lesbar: ${err}`;
     antraegeCheck.disabled = true;
   });
 
+// Alle 15 Minuten erneut nachsehen
+setInterval(refreshUpdateHint, 15 * 60 * 1000);
+
 const PHASES = { lesen: "Lese Dump", index: "Erstelle Index", kopieren: "Kopiere Datenbank" };
 
-importBtn.addEventListener("click", async () => {
-  importBtn.disabled = true;
+function showProgress(p: ImportProgress) {
+  importProgress.hidden = false;
+  importProgress.value = p.total ? (p.done / p.total) * 100 : 0;
+  antraegeStatusEl.textContent =
+    `${PHASES[p.phase]} … ${Math.round(importProgress.value)} %` +
+    (p.rows ? ` · ${p.rows.toLocaleString("de-DE")} Anträge` : "");
+}
+
+/** Gemeinsamer Ablauf für "Daten importieren" und "Jetzt aktualisieren" */
+async function runImport(action: () => Promise<AntraegeStatus | null>) {
+  importBtn.disabled = updateBtn.disabled = true;
   antraegeHintEl.textContent = "";
   try {
-    const status = await importAntraege((p) => {
-      importProgress.hidden = false;
-      importProgress.value = p.total ? (p.done / p.total) * 100 : 0;
-      antraegeStatusEl.textContent =
-        `${PHASES[p.phase]} … ${Math.round(importProgress.value)} %` +
-        (p.rows ? ` · ${p.rows.toLocaleString("de-DE")} Anträge` : "");
-    });
+    const status = await action();
     if (status) {
       showAntraegeStatus(status);
+      updateBox.hidden = true;
       antraegeCheck.checked = true;
       antraege.layer.setVisible(true);
       antraege.refresh();
@@ -338,10 +396,13 @@ importBtn.addEventListener("click", async () => {
     antraegeHintEl.textContent = `Import fehlgeschlagen: ${err}`;
     showAntraegeStatus(await getStatus().catch(() => null));
   } finally {
-    importBtn.disabled = false;
+    importBtn.disabled = updateBtn.disabled = false;
     importProgress.hidden = true;
   }
-});
+}
+
+importBtn.addEventListener("click", () => runImport(() => importAntraege(showProgress)));
+updateBtn.addEventListener("click", () => runImport(() => updateAntraege(showProgress)));
 
 // ---------- Versionsnummer im Titel ----------
 // Kommt aus src-tauri/tauri.conf.json ("version") – nur in der Desktop-App verfügbar

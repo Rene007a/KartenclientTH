@@ -24,7 +24,10 @@ pub fn run() {
             antraege::antraege_status,
             antraege::import_antraege,
             antraege::antraege_in_extent,
-            antraege::antrag_details
+            antraege::antrag_details,
+            antraege::antraege_search,
+            antraege::antraege_update_check,
+            antraege::antraege_update
         ])
         .run(tauri::generate_context!())
         .expect("Fehler beim Starten der Tauri-Anwendung");

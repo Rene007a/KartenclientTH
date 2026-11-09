@@ -190,6 +190,23 @@ button.primary {
   color: var(--muted);
 }
 
+.update-box {
+  margin-top: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  background: #e8f5e9;
+  border: 1px solid #a5d6a7;
+  border-radius: 4px;
+}
+
+.update-box[hidden] {
+  display: none;
+}
+
+.update-box button {
+  margin-top: 4px;
+}
+
 #antraege-import {
   margin-top: 6px;
 }

@@ -19,6 +19,13 @@ pub fn bbox(wkb: &[u8]) -> Option<[f64; 4]> {
     Some(r.bbox)
 }
 
+/// WKB in eine `geo`-Geometrie umwandeln (für exakte räumliche Prüfungen wie "schneidet").
+pub fn to_geo(wkb: &[u8]) -> Option<geo::Geometry<f64>> {
+    let mut r = Reader { b: wkb, pos: 0, bbox: [f64::MAX, f64::MAX, f64::MIN, f64::MIN] };
+    let g = r.geo()?;
+    (r.pos == wkb.len()).then_some(g) // then_some: true -> Some(g), false -> None
+}
+
 struct Reader<'a> {
     b: &'a [u8],
     pos: usize,
@@ -75,6 +82,61 @@ impl Reader<'_> {
             _ => None, // 3D/Messwerte o. Ä. werden nicht unterstützt
         }
     }
+
+    // --- Umwandlung in geo-Typen ---
+
+    fn coord(&mut self, le: bool) -> Option<geo::Coord<f64>> {
+        let x = self.take::<8>()?;
+        let y = self.take::<8>()?;
+        Some(if le {
+            geo::coord! { x: f64::from_le_bytes(x), y: f64::from_le_bytes(y) }
+        } else {
+            geo::coord! { x: f64::from_be_bytes(x), y: f64::from_be_bytes(y) }
+        })
+    }
+
+    fn line(&mut self, le: bool) -> Option<geo::LineString<f64>> {
+        let n = self.u32(le)?;
+        // collect::<Option<Vec<_>>>: bricht beim ersten None ab
+        let coords = (0..n).map(|_| self.coord(le)).collect::<Option<Vec<_>>>()?;
+        Some(geo::LineString::new(coords))
+    }
+
+    fn polygon(&mut self, le: bool) -> Option<geo::Polygon<f64>> {
+        let rings = self.u32(le)?;
+        let mut all = (0..rings).map(|_| self.line(le)).collect::<Option<Vec<_>>>()?;
+        if all.is_empty() {
+            return Some(geo::Polygon::new(geo::LineString::new(vec![]), vec![]));
+        }
+        let exterior = all.remove(0);
+        Some(geo::Polygon::new(exterior, all))
+    }
+
+    fn geo(&mut self) -> Option<geo::Geometry<f64>> {
+        use geo::Geometry as G;
+        let le = self.take::<1>()?[0] == 1;
+        let geom_type = self.u32(le)?;
+        let parts = |this: &mut Self| -> Option<Vec<G<f64>>> {
+            let n = this.u32(le)?;
+            (0..n).map(|_| this.geo()).collect()
+        };
+        Some(match geom_type {
+            1 => G::Point(geo::Point(self.coord(le)?)),
+            2 => G::LineString(self.line(le)?),
+            3 => G::Polygon(self.polygon(le)?),
+            4 => G::MultiPoint(geo::MultiPoint(
+                parts(self)?.into_iter().filter_map(|g| if let G::Point(p) = g { Some(p) } else { None }).collect(),
+            )),
+            5 => G::MultiLineString(geo::MultiLineString(
+                parts(self)?.into_iter().filter_map(|g| if let G::LineString(l) = g { Some(l) } else { None }).collect(),
+            )),
+            6 => G::MultiPolygon(geo::MultiPolygon(
+                parts(self)?.into_iter().filter_map(|g| if let G::Polygon(p) = g { Some(p) } else { None }).collect(),
+            )),
+            7 => G::GeometryCollection(geo::GeometryCollection(parts(self)?)),
+            _ => return None,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -104,6 +166,28 @@ mod tests {
         c.extend(&p);
         c.extend(le_polygon(&[(-3.0, 0.0), (0.0, 10.0), (-3.0, 0.0)]));
         assert_eq!(bbox(&c), Some([-3.0, 0.0, 5.0, 10.0]));
+    }
+
+    #[test]
+    fn nach_geo_und_schneiden() {
+        use geo::Intersects;
+        let quadrat = le_polygon(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 0.0)]);
+        let mut c = vec![1u8];
+        c.extend(7u32.to_le_bytes());
+        c.extend(1u32.to_le_bytes());
+        c.extend(&quadrat);
+        let collection = to_geo(&c).unwrap();
+
+        let mut innen = vec![1u8];
+        innen.extend(1u32.to_le_bytes());
+        innen.extend(5f64.to_le_bytes());
+        innen.extend(5f64.to_le_bytes());
+        let mut aussen = innen.clone();
+        aussen[5..13].copy_from_slice(&50f64.to_le_bytes());
+
+        assert!(collection.intersects(&to_geo(&innen).unwrap()));
+        assert!(!collection.intersects(&to_geo(&aussen).unwrap()));
+        assert_eq!(to_geo(&c[..c.len() - 1]), None);
     }
 
     #[test]

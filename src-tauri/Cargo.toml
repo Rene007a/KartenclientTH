@@ -1,6 +1,6 @@
 [package]
 name = "kartenclient-th"
-version = "0.3.0"
+version = "0.4.0"
 description = "Kartenclient Thueringen (OpenLayers, EPSG:25832)"
 authors = ["you"]
 edition = "2024"
@@ -27,6 +27,7 @@ rust_xlsxwriter = "0.102.0"
 tauri-plugin-dialog = "2.8.4"
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 base64 = "0.23.1"
+geo = "0.33.1"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

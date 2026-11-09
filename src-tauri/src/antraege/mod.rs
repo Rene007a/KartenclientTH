@@ -89,6 +89,11 @@ async fn run_import(app: &AppHandle) -> Result<Option<Status>, String> {
     let Some(source) = picked.and_then(|p| p.into_path().ok()) else {
         return Ok(None);
     };
+    import_from(app, source).await.map(Some)
+}
+
+/// Importiert eine bestimmte Datei und meldet den Fortschritt an das Frontend
+async fn import_from(app: &AppHandle, source: PathBuf) -> Result<Status, String> {
     let target = db_path(app)?;
 
     // Die eigentliche Arbeit dauert lange -> in einem eigenen Thread, damit die App reagiert
@@ -101,7 +106,157 @@ async fn run_import(app: &AppHandle) -> Result<Option<Status>, String> {
     .await
     .map_err(|e| e.to_string())??; // erstes ? = Thread-Fehler, zweites ? = Import-Fehler
 
-    Ok(Some(status))
+    Ok(status)
+}
+
+// ---------- Neuere Daten verfügbar? ----------
+
+#[derive(Serialize)]
+pub struct UpdateInfo {
+    /// Pfad der Quelldatei, z. B. `\\server\gis\antraege.db`
+    pfad: String,
+    /// Änderungszeit der Quelldatei (Unix-Sekunden)
+    geaendert: i64,
+}
+
+/// Änderungszeit einer Datei in Unix-Sekunden (`None`, wenn nicht erreichbar)
+fn file_modified(path: &Path) -> Option<i64> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    Some(modified.duration_since(UNIX_EPOCH).ok()?.as_secs() as i64)
+}
+
+/// Prüft, ob die zuletzt importierte Quelldatei inzwischen neuer ist.
+/// Ein nicht erreichbares Netzlaufwerk ist kein Fehler – dann gibt es einfach kein Update.
+#[tauri::command]
+pub async fn antraege_update_check(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
+    let path = db_path(&app)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    // Netzlaufwerke können langsam antworten -> eigener Thread
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = db::open_readonly(&path).ok()?;
+        let source = db::source_info(&conn).ok()??;
+        drop(conn);
+        let modified = file_modified(Path::new(&source.path))?;
+        (modified > source.modified).then_some(UpdateInfo { pfad: source.path, geaendert: modified })
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Importiert erneut aus der zuletzt verwendeten Quelldatei (ohne Dateidialog)
+#[tauri::command]
+pub async fn antraege_update(app: AppHandle, state: State<'_, ImportState>) -> Result<Status, String> {
+    if state.0.swap(true, Ordering::SeqCst) {
+        return Err("Es läuft bereits ein Import.".into());
+    }
+    let result = run_update(&app).await;
+    state.0.store(false, Ordering::SeqCst);
+    result
+}
+
+async fn run_update(app: &AppHandle) -> Result<Status, String> {
+    let path = db_path(app)?;
+    let source = {
+        let conn = db::open_readonly(&path).map_err(|e| e.to_string())?;
+        db::source_info(&conn).map_err(|e| e.to_string())?
+    }
+    .ok_or("Es ist keine Quelldatei bekannt. Bitte über „Daten importieren …“ einlesen.")?;
+    import_from(app, PathBuf::from(source.path)).await
+}
+
+// ---------- Räumliche Suche ----------
+
+#[derive(Serialize)]
+pub struct SearchHit {
+    id: i64,
+    /// Geometrie als WKB, Base64-kodiert
+    wkb: String,
+    /// Alle Sachdaten als (Feld, Wert)-Paare
+    props: Vec<(String, String)>,
+}
+
+#[derive(Serialize)]
+pub struct SearchResult {
+    features: Vec<SearchHit>,
+    /// true, wenn es mehr als `limit` Treffer gibt
+    truncated: bool,
+}
+
+/// Alle Anträge, die mindestens eine der Suchgeometrien schneiden.
+/// `geometries`: WKB als Hex-Text (so liefert OpenLayers sie), EPSG:25832.
+#[tauri::command]
+pub async fn antraege_search(
+    app: AppHandle,
+    geometries: Vec<String>,
+    limit: u32,
+) -> Result<SearchResult, String> {
+    let path = db_path(&app)?;
+    if !path.exists() {
+        return Err("Es sind noch keine Antragsdaten importiert.".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || search(&path, &geometries, limit as usize))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn search(path: &Path, geometries: &[String], limit: usize) -> Result<SearchResult, String> {
+    use geo::Intersects;
+
+    // Suchgeometrien einlesen: (geo-Geometrie, Bounding Box)
+    let searches = geometries
+        .iter()
+        .map(|hex| {
+            let bytes = dump::decode_hex(hex.as_bytes()).ok_or("Suchgeometrie ist kein gültiges WKB.")?;
+            let geom = wkb::to_geo(&bytes).ok_or("Suchgeometrie konnte nicht gelesen werden.")?;
+            let bbox = wkb::bbox(&bytes).ok_or("Suchgeometrie ist leer.")?;
+            Ok((geom, bbox))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if searches.is_empty() {
+        return Err("Keine Suchgeometrie gezeichnet.".into());
+    }
+
+    let conn = db::open_readonly(path).map_err(|e| e.to_string())?;
+    let mut found: Vec<(i64, Vec<u8>)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut truncated = false;
+
+    for (search_geom, bbox) in &searches {
+        // 1. Schnell: Kandidaten über den R-Tree (nur Bounding Boxes)
+        // 2. Genau: echte Prüfung "schneidet" mit der geo-Bibliothek
+        db::for_each_candidate(&conn, *bbox, |id, geom| {
+            if seen.contains(&id) {
+                return true;
+            }
+            let hit = wkb::to_geo(geom).is_some_and(|g| g.intersects(search_geom));
+            if hit {
+                seen.insert(id);
+                found.push((id, geom.to_vec()));
+                if found.len() > limit {
+                    found.pop();
+                    truncated = true;
+                    return false; // abbrechen
+                }
+            }
+            true
+        })
+        .map_err(|e| e.to_string())?;
+        if truncated {
+            break;
+        }
+    }
+
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let features = found
+        .into_iter()
+        .map(|(id, geom)| {
+            let props = db::details(&conn, id).map_err(|e| e.to_string())?;
+            Ok(SearchHit { id, wkb: b64.encode(geom), props })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(SearchResult { features, truncated })
 }
 
 /// Ergebnis einer Ausschnittsabfrage
@@ -187,6 +342,8 @@ pub fn import_file(
     } else {
         copy_db(source, &tmp, &mut progress)
     };
+    // Quelle merken – für die spätere Prüfung "Neuere Daten verfügbar"
+    let result = result.and_then(|()| remember_source(source, &tmp));
     if let Err(e) = result {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
@@ -200,6 +357,15 @@ pub fn import_file(
 
     replace_file(&tmp, target)?;
     Ok(status)
+}
+
+fn remember_source(source: &Path, tmp: &Path) -> Result<(), String> {
+    let full_path = std::path::absolute(source).unwrap_or_else(|_| source.to_path_buf());
+    let modified = file_modified(source).unwrap_or(0);
+    let conn = rusqlite::Connection::open(tmp).map_err(|e| e.to_string())?;
+    db::set_meta(&conn, "quelle_pfad", &full_path.display().to_string()).map_err(|e| e.to_string())?;
+    db::set_meta(&conn, "quelle_geaendert", &modified.to_string()).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Windows erlaubt das Ersetzen nicht, solange die Datei gerade gelesen wird – kurz erneut versuchen
@@ -469,6 +635,35 @@ mod tests {
         assert_eq!(hits.len(), 2);
         assert!(db::in_extent(&conn, [0.0, 0.0, 1.0, 1.0], 10).unwrap().is_empty());
 
+        // Räumliche Suche mit einem Rechteck als WKB-Hex (wie es OpenLayers schickt)
+        let rect_hex = |x0: f64, y0: f64, x1: f64, y1: f64| -> String {
+            let mut w = vec![1u8];
+            w.extend(3u32.to_le_bytes());
+            w.extend(1u32.to_le_bytes());
+            w.extend(5u32.to_le_bytes());
+            for (x, y) in [(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)] {
+                w.extend(x.to_le_bytes());
+                w.extend(y.to_le_bytes());
+            }
+            w.iter().map(|b| format!("{b:02X}")).collect()
+        };
+        let um_punkt = rect_hex(641990.0, 5648990.0, 642010.0, 5649010.0);
+        let r = search(&target, &[um_punkt.clone()], 10).unwrap();
+        assert_eq!(r.features.len(), 2);
+        assert!(!r.truncated);
+        assert!(r.features[0].props.iter().any(|(k, v)| k == "antragsnummer" && v == "A-1"));
+        let r = search(&target, &[um_punkt], 1).unwrap();
+        assert_eq!(r.features.len(), 1);
+        assert!(r.truncated);
+        // Bounding Box trifft, Geometrie aber nicht: Rechteck knapp neben dem Punkt
+        let daneben = rect_hex(642001.0, 5649001.0, 642010.0, 5649010.0);
+        assert!(search(&target, &[daneben], 10).unwrap().features.is_empty());
+
+        // Quelle für "Neuere Daten verfügbar" gemerkt
+        let src_info = db::source_info(&conn).unwrap().unwrap();
+        assert!(src_info.path.ends_with("test.sql"));
+        assert_eq!(Some(src_info.modified), file_modified(&src));
+
         let d = db::details(&conn, 1).unwrap();
         let get = |k: &str| d.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         assert_eq!(get("gemarkung"), Some("Erfurt-Mitte"));
@@ -520,5 +715,36 @@ mod tests {
         println!("Ausschnitt Erfurt 5x4 km: {} Anträge in {:?}", hits.len(), t.elapsed());
         let felder: Vec<String> = db::details(&conn, hits[0].id).unwrap().into_iter().map(|(k, _)| k).collect();
         println!("Felder: {}", felder.join(", "));
+        drop(conn);
+
+        // Suchzeiten: Rechtecke (WKB-Hex wie aus OpenLayers) und ein Punkt
+        let rect = |x0: f64, y0: f64, x1: f64, y1: f64| -> String {
+            let mut w = vec![1u8];
+            w.extend(3u32.to_le_bytes());
+            w.extend(1u32.to_le_bytes());
+            w.extend(5u32.to_le_bytes());
+            for (x, y) in [(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)] {
+                w.extend(x.to_le_bytes());
+                w.extend(y.to_le_bytes());
+            }
+            w.iter().map(|b| format!("{b:02X}")).collect()
+        };
+        let mut punkt = vec![1u8, 1, 0, 0, 0];
+        punkt.extend(642300f64.to_le_bytes());
+        punkt.extend(5649200f64.to_le_bytes());
+        let punkt: String = punkt.iter().map(|b| format!("{b:02X}")).collect();
+
+        for (name, geom) in [
+            ("Rechteck 200 m", rect(642200.0, 5649100.0, 642400.0, 5649300.0)),
+            ("Rechteck 2 km", rect(641000.0, 5648000.0, 643000.0, 5650000.0)),
+            ("Punkt", punkt),
+        ] {
+            let t = std::time::Instant::now();
+            let r = search(&target, &[geom], 1000).unwrap();
+            println!("Suche {name}: {} Treffer (abgeschnitten: {}) in {:?}", r.features.len(), r.truncated, t.elapsed());
+        }
+
+        // Testdatenbank enthält echte (personenbezogene) Daten -> wieder löschen
+        std::fs::remove_file(&target).unwrap();
     }
 }
