@@ -14,6 +14,9 @@ import { DrawManager, type DrawTool } from "./draw";
 import { ResultsPanel } from "./results";
 import { searchWfs } from "./search";
 import { exportPdf, exportTable } from "./export";
+import { getVersion } from "@tauri-apps/api/app";
+import { isTauri } from "@tauri-apps/api/core";
+import { AntraegeLayer, formatStatus, getDetails, getStatus, importAntraege } from "./antraege";
 import type Feature from "ol/Feature";
 
 // ---------- Layer anlegen ----------
@@ -98,12 +101,23 @@ function scaleFor(resolution: number) {
   return Math.round(resolution / 0.00028).toLocaleString("de-DE");
 }
 
-// ---------- Sachdaten per Klick auf WFS-Objekte ----------
+// ---------- Sachdaten per Klick auf WFS-Objekte und Anträge ----------
 const infoEl = document.getElementById("info")!;
+/** Maximal so viele übereinanderliegende Anträge in der Objektinfo */
+const MAX_ANTRAEGE_INFO = 20;
+let clickNo = 0;
 
-map.on("singleclick", (evt) => {
+function infoTable(title: string, rows: [string, string][]) {
+  const tr = rows
+    .map(([k, v]) => `<tr><th>${escapeHtml(k)}</th><td>${escapeHtml(v)}</td></tr>`)
+    .join("");
+  return `<h3>${escapeHtml(title)}</h3><table>${tr}</table>`;
+}
+
+map.on("singleclick", async (evt) => {
   // Beim Zeichnen gehört der Klick dem Zeichenwerkzeug
   if (draw.activeTool) return;
+  const myClick = ++clickNo;
 
   // Klick auf einen Suchtreffer markiert die Tabellenzeile
   const hit = map.forEachFeatureAtPixel(evt.pixel, (f) => f, {
@@ -112,21 +126,47 @@ map.on("singleclick", (evt) => {
   if (hit) results.select(hit as Feature);
 
   const hits: string[] = [];
+  const antragIds: number[] = [];
   map.forEachFeatureAtPixel(
     evt.pixel,
     (feature, layer) => {
+      if (layer === antraege.layer) {
+        antragIds.push(feature.getId() as number);
+        return;
+      }
       // Geometrien sind Objekte und werden durch den Filter ausgeblendet
       const rows = Object.entries(feature.getProperties())
         .filter(([, v]) => v !== undefined && v !== null && typeof v !== "object")
-        .map(([k, v]) => `<tr><th>${escapeHtml(k)}</th><td>${escapeHtml(String(v))}</td></tr>`)
-        .join("");
-      hits.push(`<h3>${escapeHtml((layer as VectorLayer).get("title"))}</h3><table>${rows}</table>`);
+        .map(([k, v]) => [k, String(v)] as [string, string]);
+      hits.push(infoTable((layer as VectorLayer).get("title"), rows));
     },
-    { layerFilter: (l) => wfsLayers.includes(l as VectorLayer) || l === results.layer },
+    {
+      layerFilter: (l) =>
+        wfsLayers.includes(l as VectorLayer) || l === results.layer || l === antraege.layer,
+    },
   );
-  infoEl.innerHTML = hits.length
-    ? hits.join("")
-    : "<em>Kein WFS-Objekt an dieser Stelle.</em>";
+
+  // Anträge: vollständige Daten aus der lokalen Datenbank (Rust) holen
+  if (antragIds.length) {
+    infoEl.innerHTML = hits.join("") + "<em>Lade Antragsdaten …</em>";
+    try {
+      const shown = antragIds.slice(0, MAX_ANTRAEGE_INFO);
+      const details = await Promise.all(shown.map((id) => getDetails(id)));
+      if (myClick !== clickNo) return; // inzwischen woanders geklickt
+      details.forEach((rows) => {
+        const nr = rows.find(([k]) => k === "antragsnummer")?.[1] ?? "";
+        hits.push(infoTable(`Antrag ${nr}`, rows));
+      });
+      if (antragIds.length > shown.length) {
+        hits.push(`<em>… und ${antragIds.length - shown.length} weitere Anträge an dieser Stelle.</em>`);
+      }
+    } catch (err) {
+      hits.push(`<em>Fehler beim Laden der Antragsdaten: ${escapeHtml(String(err))}</em>`);
+    }
+  }
+
+  if (myClick !== clickNo) return;
+  infoEl.innerHTML = hits.length ? hits.join("") : "<em>Kein Objekt an dieser Stelle.</em>";
 });
 
 function escapeHtml(s: string) {
@@ -238,3 +278,75 @@ exportButtons.forEach((btn) =>
     }
   }),
 );
+
+// ---------- Eigene Daten: Anträge ----------
+const antraegeStatusEl = document.getElementById("antraege-status")!;
+const antraegeHintEl = document.getElementById("antraege-hint")!;
+const antraegeCheck = document.getElementById("antraege-visible") as HTMLInputElement;
+const importBtn = document.getElementById("antraege-import") as HTMLButtonElement;
+const importProgress = document.getElementById("antraege-progress") as HTMLProgressElement;
+
+const antraege = new AntraegeLayer(map, (text) => (antraegeHintEl.textContent = text));
+antraegeCheck.addEventListener("change", () => antraege.layer.setVisible(antraegeCheck.checked));
+
+function showAntraegeStatus(status: Awaited<ReturnType<typeof getStatus>>) {
+  antraegeStatusEl.textContent = status
+    ? formatStatus(status)
+    : "Noch keine Daten importiert.";
+  antraegeCheck.disabled = !status;
+  if (!status) {
+    antraegeCheck.checked = false;
+    antraege.layer.setVisible(false);
+  }
+}
+
+getStatus()
+  .then(showAntraegeStatus)
+  .catch((err) => {
+    antraegeStatusEl.textContent = `Datenbank nicht lesbar: ${err}`;
+    antraegeCheck.disabled = true;
+  });
+
+const PHASES = { lesen: "Lese Dump", index: "Erstelle Index", kopieren: "Kopiere Datenbank" };
+
+importBtn.addEventListener("click", async () => {
+  importBtn.disabled = true;
+  antraegeHintEl.textContent = "";
+  try {
+    const status = await importAntraege((p) => {
+      importProgress.hidden = false;
+      importProgress.value = p.total ? (p.done / p.total) * 100 : 0;
+      antraegeStatusEl.textContent =
+        `${PHASES[p.phase]} … ${Math.round(importProgress.value)} %` +
+        (p.rows ? ` · ${p.rows.toLocaleString("de-DE")} Anträge` : "");
+    });
+    if (status) {
+      showAntraegeStatus(status);
+      antraegeCheck.checked = true;
+      antraege.layer.setVisible(true);
+      antraege.refresh();
+      if (status.ohne_geometrie) {
+        antraegeHintEl.textContent =
+          `${status.ohne_geometrie.toLocaleString("de-DE")} Datensätze ohne Geometrie wurden nicht übernommen.`;
+      }
+    } else {
+      // Dialog abgebrochen: alten Stand wieder anzeigen
+      showAntraegeStatus(await getStatus());
+    }
+  } catch (err) {
+    console.error(err);
+    antraegeHintEl.textContent = `Import fehlgeschlagen: ${err}`;
+    showAntraegeStatus(await getStatus().catch(() => null));
+  } finally {
+    importBtn.disabled = false;
+    importProgress.hidden = true;
+  }
+});
+
+// ---------- Versionsnummer im Titel ----------
+// Kommt aus src-tauri/tauri.conf.json ("version") – nur in der Desktop-App verfügbar
+if (isTauri()) {
+  getVersion()
+    .then((v) => (document.getElementById("app-version")!.textContent = `v${v}`))
+    .catch((err) => console.error("Version nicht lesbar:", err));
+}

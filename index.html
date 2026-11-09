@@ -9,7 +9,7 @@
 
   <body>
     <aside id="sidebar">
-      <h1>Kartenclient Thüringen</h1>
+      <h1>Kartenclient Thüringen <span id="app-version" class="app-version"></span></h1>
 
       <section>
         <h2>Hintergrundkarte</h2>
@@ -25,6 +25,19 @@
         <h2>WFS (Vektordaten)</h2>
         <div id="wfs-layers" class="layer-list"></div>
         <div id="status"></div>
+      </section>
+
+      <section>
+        <h2>Eigene Daten</h2>
+        <div class="layer-list">
+          <label><input type="checkbox" id="antraege-visible" disabled /> Anträge</label>
+        </div>
+        <div id="antraege-status" class="hint">Lade Datenstand …</div>
+        <progress id="antraege-progress" max="100" hidden></progress>
+        <button id="antraege-import" title="MariaDB-Dump (.sql) oder Antragsdatenbank (.db) einlesen">
+          Daten importieren …
+        </button>
+        <div id="antraege-hint" class="hint"></div>
       </section>
 
       <section>

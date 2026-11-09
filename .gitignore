@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Lokale Daten (z. B. Datenbank-Dumps) – nicht nach GitHub!
+daten/
+*.sql
+*.sql.gz
+*.db
