@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kartenclient Thüringen</title>
+    <script type="module" src="/src/main.ts"></script>
+  </head>
+
+  <body>
+    <aside id="sidebar">
+      <h1>Kartenclient Thüringen</h1>
+
+      <section>
+        <h2>Hintergrundkarte</h2>
+        <div id="base-layers" class="layer-list"></div>
+      </section>
+
+      <section>
+        <h2>WMS (Kartenbilder)</h2>
+        <div id="wms-layers" class="layer-list"></div>
+      </section>
+
+      <section>
+        <h2>WFS (Vektordaten)</h2>
+        <div id="wfs-layers" class="layer-list"></div>
+        <div id="status"></div>
+      </section>
+
+      <section class="grow">
+        <h2>Objektinfo</h2>
+        <div id="info"><em>WFS-Layer einschalten, hineinzoomen und auf ein Objekt klicken.</em></div>
+      </section>
+    </aside>
+
+    <main id="map">
+      <div id="coords"></div>
+    </main>
+  </body>
+</html>
