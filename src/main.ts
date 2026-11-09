@@ -10,6 +10,11 @@ import type VectorLayer from "ol/layer/Vector";
 import { projection, THURINGIA_EXTENT, ERFURT } from "./projection";
 import { BASE_LAYERS, WMS_LAYERS, WFS_LAYERS } from "./services";
 import { createBaseLayer, createWmsLayer, createWfsLayer } from "./layers";
+import { DrawManager, type DrawTool } from "./draw";
+import { ResultsPanel } from "./results";
+import { searchWfs } from "./search";
+import { exportPdf, exportTable } from "./export";
+import type Feature from "ol/Feature";
 
 // ---------- Layer anlegen ----------
 const baseLayers = BASE_LAYERS.map(createBaseLayer);
@@ -97,6 +102,15 @@ function scaleFor(resolution: number) {
 const infoEl = document.getElementById("info")!;
 
 map.on("singleclick", (evt) => {
+  // Beim Zeichnen gehört der Klick dem Zeichenwerkzeug
+  if (draw.activeTool) return;
+
+  // Klick auf einen Suchtreffer markiert die Tabellenzeile
+  const hit = map.forEachFeatureAtPixel(evt.pixel, (f) => f, {
+    layerFilter: (l) => l === results.layer,
+  });
+  if (hit) results.select(hit as Feature);
+
   const hits: string[] = [];
   map.forEachFeatureAtPixel(
     evt.pixel,
@@ -108,7 +122,7 @@ map.on("singleclick", (evt) => {
         .join("");
       hits.push(`<h3>${escapeHtml((layer as VectorLayer).get("title"))}</h3><table>${rows}</table>`);
     },
-    { layerFilter: (l) => wfsLayers.includes(l as VectorLayer) },
+    { layerFilter: (l) => wfsLayers.includes(l as VectorLayer) || l === results.layer },
   );
   infoEl.innerHTML = hits.length
     ? hits.join("")
@@ -139,3 +153,88 @@ wfsLayers.forEach((l) => {
 function update() {
   statusEl.textContent = loading > 0 ? `Lade WFS-Daten … (${loading})` : "";
 }
+
+// ---------- Zeichnen & Suchen ----------
+const draw = new DrawManager(map);
+const results = new ResultsPanel(map, document.getElementById("results")!);
+
+const toolButtons = document.querySelectorAll<HTMLButtonElement>("#draw-tools button");
+const undoBtn = document.getElementById("draw-undo") as HTMLButtonElement;
+const clearBtn = document.getElementById("draw-clear") as HTMLButtonElement;
+const searchBtn = document.getElementById("search-run") as HTMLButtonElement;
+const searchSelect = document.getElementById("search-layer") as HTMLSelectElement;
+const drawStatusEl = document.getElementById("draw-status")!;
+const searchErrorEl = document.getElementById("search-error")!;
+
+toolButtons.forEach((btn) =>
+  btn.addEventListener("click", () => draw.setTool(btn.dataset.tool as DrawTool)),
+);
+undoBtn.addEventListener("click", () => draw.undo());
+clearBtn.addEventListener("click", () => draw.clear());
+
+WFS_LAYERS.forEach((cfg) => searchSelect.add(new Option(cfg.title, cfg.id)));
+
+const TOOL_HINTS: Record<DrawTool, string> = {
+  Point: "Klicken setzt Punkte – jedes getroffene Objekt wird gefunden.",
+  LineString: "Klicken setzt Stützpunkte, Doppelklick beendet die Linie.",
+  Polygon: "Klicken setzt Ecken, Doppelklick schließt das Polygon.",
+  Box: "Klicken, ziehen, erneut klicken.",
+  Circle: "Mittelpunkt klicken, Radius ziehen, erneut klicken.",
+};
+
+function updateDrawUi() {
+  toolButtons.forEach((btn) =>
+    btn.classList.toggle("active", btn.dataset.tool === draw.activeTool),
+  );
+  const n = draw.count;
+  undoBtn.disabled = clearBtn.disabled = n === 0;
+  searchBtn.disabled = n === 0;
+  const parts = [];
+  if (draw.activeTool) parts.push(TOOL_HINTS[draw.activeTool] + " Esc beendet.");
+  parts.push(n ? `${n} Suchgeometrie${n > 1 ? "n" : ""} gezeichnet.` : "Noch nichts gezeichnet.");
+  drawStatusEl.textContent = parts.join(" ");
+}
+draw.onChange(updateDrawUi);
+updateDrawUi();
+
+searchBtn.addEventListener("click", async () => {
+  const cfg = WFS_LAYERS.find((c) => c.id === searchSelect.value)!;
+  searchBtn.disabled = true;
+  searchBtn.textContent = "Suche läuft …";
+  searchErrorEl.textContent = "";
+  try {
+    const { features, truncated } = await searchWfs(cfg, draw.getSearchGeometries());
+    results.show(cfg.title, features, truncated);
+  } catch (err) {
+    console.error(err);
+    searchErrorEl.textContent = err instanceof Error ? err.message : String(err);
+  } finally {
+    searchBtn.textContent = "Objekte im Suchbereich suchen";
+    updateDrawUi();
+  }
+});
+
+// ---------- Export (CSV / Excel / PDF) ----------
+const exportMsgEl = document.getElementById("export-msg")!;
+const exportButtons = document.querySelectorAll<HTMLButtonElement>("#results [data-export]");
+
+exportButtons.forEach((btn) =>
+  btn.addEventListener("click", async () => {
+    if (results.isEmpty) return;
+    const format = btn.dataset.export as "csv" | "xlsx" | "pdf";
+    const table = results.getTable();
+
+    exportButtons.forEach((b) => (b.disabled = true));
+    exportMsgEl.textContent = format === "pdf" ? "PDF wird erstellt …" : "";
+    try {
+      const path =
+        format === "pdf" ? await exportPdf(map, table) : await exportTable(format, table);
+      exportMsgEl.textContent = path ? `Gespeichert: ${path}` : "";
+    } catch (err) {
+      console.error(err);
+      exportMsgEl.textContent = `Fehler: ${err instanceof Error ? err.message : String(err)}`;
+    } finally {
+      exportButtons.forEach((b) => (b.disabled = false));
+    }
+  }),
+);

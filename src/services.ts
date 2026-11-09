@@ -28,7 +28,12 @@ export interface WfsLayerConfig {
   id: string;
   title: string;
   url: string;
+  /** Mit Präfix, z. B. "ave:Flurstueck" */
   typeName: string;
+  /** XML-Namespace zum Präfix (steht in GetCapabilities) */
+  featureNS: string;
+  /** Name des Geometrie-Attributs (steht in DescribeFeatureType) – für räumliche Filter */
+  geometryName: string;
   attribution: string;
   /** WFS-Abfragen erst ab dieser Auflösung (m/Pixel) – schützt vor Riesenabfragen */
   maxResolution: number;
@@ -114,39 +119,54 @@ export const WMS_LAYERS: WmsLayerConfig[] = [
 ];
 
 // ALKIS vereinfacht (AdV-Profil) – liefert GML 3.2
+const ALKIS_WFS = {
+  url: `${GEOPROXY}/adv_alkis_wfs`,
+  featureNS: "http://repository.gdi-de.org/schemas/adv/produkt/alkis-vereinfacht/1.0",
+  geometryName: "geometrie",
+  attribution: TLBG,
+};
+
 export const WFS_LAYERS: WfsLayerConfig[] = [
   {
-    id: "wfs_gemeinden",
-    title: "Verwaltungseinheiten (WFS)",
-    url: `${GEOPROXY}/adv_alkis_wfs`,
-    typeName: "ave:VerwaltungsEinheit",
-    attribution: TLBG,
-    maxResolution: 60,
-    maxFeatures: 500,
-    stroke: "#7b1fa2",
-    fill: "rgba(123,31,162,0.05)",
-    labelField: "name",
-  },
-  {
+    ...ALKIS_WFS,
     id: "wfs_flurstuecke",
     title: "Flurstücke (WFS)",
-    url: `${GEOPROXY}/adv_alkis_wfs`,
     typeName: "ave:Flurstueck",
-    attribution: TLBG,
     maxResolution: 1.5,
     maxFeatures: 2000,
     stroke: "#d32f2f",
     fill: "rgba(211,47,47,0.05)",
   },
   {
+    ...ALKIS_WFS,
     id: "wfs_gebaeude",
     title: "Gebäude/Bauwerke (WFS)",
-    url: `${GEOPROXY}/adv_alkis_wfs`,
     typeName: "ave:GebaeudeBauwerk",
-    attribution: TLBG,
     maxResolution: 1.5,
     maxFeatures: 2000,
     stroke: "#1565c0",
     fill: "rgba(21,101,192,0.25)",
+  },
+  {
+    ...ALKIS_WFS,
+    id: "wfs_katasterbezirke",
+    title: "Gemarkungen/Fluren (WFS)",
+    typeName: "ave:KatasterBezirk",
+    maxResolution: 10,
+    maxFeatures: 1000,
+    stroke: "#2e7d32",
+    fill: "rgba(46,125,50,0.04)",
+    labelField: "name",
+  },
+  {
+    ...ALKIS_WFS,
+    id: "wfs_gemeinden",
+    title: "Verwaltungseinheiten (WFS)",
+    typeName: "ave:VerwaltungsEinheit",
+    maxResolution: 60,
+    maxFeatures: 500,
+    stroke: "#7b1fa2",
+    fill: "rgba(123,31,162,0.05)",
+    labelField: "name",
   },
 ];

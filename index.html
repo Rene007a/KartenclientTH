@@ -27,14 +27,50 @@
         <div id="status"></div>
       </section>
 
+      <section>
+        <h2>Zeichnen &amp; Suchen</h2>
+        <div class="tool-row" id="draw-tools">
+          <button data-tool="Point" title="Punkte setzen – z. B. einzelne Flurstücke anklicken">● Punkt</button>
+          <button data-tool="LineString" title="Linie zeichnen, Doppelklick beendet">╱ Linie</button>
+          <button data-tool="Polygon" title="Polygon zeichnen, Doppelklick beendet">⬠ Polygon</button>
+          <button data-tool="Box" title="Rechteck aufziehen">▭ Rechteck</button>
+          <button data-tool="Circle" title="Kreis aufziehen">◯ Kreis</button>
+        </div>
+        <div class="tool-row">
+          <button id="draw-undo" title="Letzte Zeichnung entfernen">↶ Rückgängig</button>
+          <button id="draw-clear" title="Alle Zeichnungen entfernen">✕ Alle löschen</button>
+        </div>
+        <label class="field">
+          Suchen in
+          <select id="search-layer"></select>
+        </label>
+        <button id="search-run" class="primary">Objekte im Suchbereich suchen</button>
+        <div id="draw-status" class="hint"></div>
+        <div id="search-error" class="error"></div>
+      </section>
+
       <section class="grow">
         <h2>Objektinfo</h2>
         <div id="info"><em>WFS-Layer einschalten, hineinzoomen und auf ein Objekt klicken.</em></div>
       </section>
     </aside>
 
-    <main id="map">
-      <div id="coords"></div>
+    <main id="main">
+      <div id="map">
+        <div id="coords"></div>
+      </div>
+      <section id="results" hidden>
+        <header>
+          <span class="results-title"></span>
+          <span id="export-msg" class="hint"></span>
+          <button data-export="csv" title="Tabelle als CSV speichern (Semikolon, für Excel)">CSV</button>
+          <button data-export="xlsx" title="Tabelle als Excel-Datei speichern">Excel</button>
+          <button data-export="pdf" title="Karte und Tabelle als PDF speichern">PDF</button>
+          <button class="results-zoom" title="Auf alle Treffer zoomen">Alle zeigen</button>
+          <button class="results-close" title="Ergebnisse schließen">✕</button>
+        </header>
+        <div class="results-scroll"><table></table></div>
+      </section>
     </main>
   </body>
 </html>

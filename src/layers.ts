@@ -24,13 +24,15 @@ function wmsSource(url: string, layers: string, attribution: string) {
     params: { LAYERS: layers, FORMAT: "image/png", TRANSPARENT: true, VERSION: "1.3.0" },
     projection: EPSG_CODE,
     attributions: attribution,
+    // Nötig, damit die Karte als Bild exportiert werden kann (PDF)
+    crossOrigin: "anonymous",
   });
 }
 
 export function createBaseLayer(cfg: BaseLayerConfig): BaseLayer {
   const source =
     cfg.kind === "osm"
-      ? new OSM() // liegt in EPSG:3857 vor – OpenLayers projiziert live nach 25832
+      ? new OSM({ crossOrigin: "anonymous" }) // liegt in EPSG:3857 vor – OpenLayers projiziert live nach 25832
       : wmsSource(cfg.url!, cfg.layers!, cfg.attribution);
   const layer = new TileLayer({ source, visible: false });
   layer.set("id", cfg.id);

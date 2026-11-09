@@ -105,9 +105,160 @@ body {
   font-weight: 500;
 }
 
+#main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 #map {
   flex: 1;
+  min-height: 0;
   position: relative;
+}
+
+/* ---------- Zeichnen & Suchen ---------- */
+.tool-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+button {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 8px;
+  color: var(--text);
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+button.active {
+  color: #fff;
+  background: #ef6c00;
+  border-color: #ef6c00;
+}
+
+button.primary {
+  width: 100%;
+  padding: 6px 8px;
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.field {
+  display: block;
+  margin: 8px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.field select {
+  display: block;
+  width: 100%;
+  margin-top: 2px;
+  padding: 4px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.hint {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.error {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #c62828;
+  word-break: break-word;
+}
+
+.error:empty {
+  display: none;
+}
+
+/* ---------- Ergebnistabelle ---------- */
+#results {
+  height: 35%;
+  min-height: 140px;
+  display: flex;
+  flex-direction: column;
+  border-top: 2px solid var(--accent);
+  background: #fff;
+}
+
+#results[hidden] {
+  display: none;
+}
+
+#results header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--sidebar-bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.results-title {
+  flex: 1;
+  font-weight: 600;
+}
+
+.results-scroll {
+  flex: 1;
+  overflow: auto;
+}
+
+#results table {
+  border-collapse: collapse;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+#results th {
+  position: sticky;
+  top: 0;
+  padding: 4px 8px;
+  text-align: left;
+  background: #eef1f4;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+}
+
+#results td {
+  padding: 3px 8px;
+  border-bottom: 1px solid #eef0f2;
+}
+
+#results tbody tr {
+  cursor: pointer;
+}
+
+#results tbody tr:hover {
+  background: #fff8e1;
+}
+
+#results tbody tr.selected {
+  background: #ffe0b2;
 }
 
 #coords {
